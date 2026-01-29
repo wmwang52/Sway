@@ -2,58 +2,78 @@
 //  ContentView.swift
 //  Sway
 //
-//  Created by William Wang on 1/22/26.
+//  Created by William Wang on 1/29/26.
 //
 
 import SwiftUI
-import SwiftData
+import MusicKit
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+    @State private var authStatus: MusicAuthorization.Status = MusicAuthorization.currentStatus
+    @State private var isRequesting = false
 
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+        VStack(spacing: 16) {
+            if authStatus == .authorized {
+                MusicPage()
+            } else {
+                Button {
+                    Task { await requestAuthorization() }
+                } label: {
+                    if isRequesting {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                    } else {
+                        Text("Enable Apple Music Access")
                     }
                 }
-                .onDelete(perform: deleteItems)
-            }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-            .toolbar {
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+                .disabled(isRequesting)
+
+                if authStatus == .denied || authStatus == .restricted {
+                    VStack(spacing: 8) {
+                        Text("Access is \(statusDescription(authStatus)).")
+                        Button("Open Settings") {
+                            openAppSettings()
+                        }
                     }
                 }
             }
-        } detail: {
-            Text("Select an item")
+        }
+        .task { await refreshStatus() }
+    }
+
+    private func refreshStatus() async {
+        let status = MusicAuthorization.currentStatus
+        await MainActor.run { authStatus = status }
+    }
+
+    private func requestAuthorization() async {
+        await MainActor.run { isRequesting = true }
+        let status = await AppMusicAuthorizationManager.shared.checkAndRequestAuthorizationIfNeeded()
+        await MainActor.run {
+            authStatus = status
+            isRequesting = false
         }
     }
 
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
+    private func statusDescription(_ status: MusicAuthorization.Status) -> String {
+        switch status {
+        case .notDetermined: return "Not Determined"
+        case .denied: return "Denied"
+        case .restricted: return "Restricted"
+        case .authorized: return "Authorized"
+        @unknown default: return "Unknown"
         }
     }
 
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
-            }
+    private func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        if UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url)
         }
     }
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
 }
